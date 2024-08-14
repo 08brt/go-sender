@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
-	"log"
 	"mime/multipart"
 	"net/http"
 	"net/smtp"
@@ -29,14 +28,14 @@ type Message struct {
 	Attachments map[string][]byte
 }
 
-func NewMessage(subject, body string) *Message {
-	return &Message{Subject: subject, Body: body, Attachments: make(map[string][]byte)}
+func NewMessage(s, b string) *Message {
+	return &Message{Subject: s, Body: b, Attachments: make(map[string][]byte)}
 }
 
 func (m *Message) AttachFile(src string) error {
 	b, err := os.ReadFile(src)
 	if err != nil {
-		return fmt.Errorf("error reading file %s: %w", src, err)
+		return err
 	}
 
 	_, fileName := filepath.Split(src)
@@ -55,22 +54,22 @@ func (m *Message) ToBytes() []byte {
 	boundary := writer.Boundary()
 	if withAttachments {
 		buf.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=%s\n", boundary))
-		writeBoundary(writer, buf)
+		buf.WriteString(fmt.Sprintf("--%s\n", boundary))
 	} else {
 		buf.WriteString("Content-Type: text/plain; charset=utf-8\n")
 	}
 
 	buf.WriteString(m.Body)
 	if withAttachments {
-		for fileName, content := range m.Attachments {
-			writeBoundary(writer, buf)
-			buf.WriteString(fmt.Sprintf("Content-Type: %s\n", http.DetectContentType(content)))
+		for k, v := range m.Attachments {
+			buf.WriteString(fmt.Sprintf("\n\n--%s\n", boundary))
+			buf.WriteString(fmt.Sprintf("Content-Type: %s\n", http.DetectContentType(v)))
 			buf.WriteString("Content-Transfer-Encoding: base64\n")
-			buf.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=%s\n", fileName))
+			buf.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=%s\n", k))
 
-			b64Content := make([]byte, base64.StdEncoding.EncodedLen(len(content)))
-			base64.StdEncoding.Encode(b64Content, content)
-			buf.Write(b64Content)
+			b := make([]byte, base64.StdEncoding.EncodedLen(len(v)))
+			base64.StdEncoding.Encode(b, v)
+			buf.Write(b)
 			buf.WriteString(fmt.Sprintf("\n--%s", boundary))
 		}
 
@@ -80,51 +79,43 @@ func (m *Message) ToBytes() []byte {
 	return buf.Bytes()
 }
 
-func writeBoundary(writer *multipart.Writer, buf *bytes.Buffer) {
-	buf.WriteString(fmt.Sprintf("--%s\n", writer.Boundary()))
-}
-
-func getUserInput(reader *bufio.Reader) (string, error) {
-	fmt.Print("Enter email address (or 'exit'): ")
-	email, err := reader.ReadString('\n')
-	if err != nil {
-		return "", fmt.Errorf("error reading input: %w", err)
-	}
-	return strings.TrimSpace(email), nil
-}
-
-func sendEmail(m *Message) error {
-	auth := smtp.PlainAuth("", username, password, host)
-	return smtp.SendMail(fmt.Sprintf("%s:%s", host, portNumber), auth, username, m.To, m.ToBytes())
-}
-
 func main() {
+
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
-		email, err := getUserInput(reader)
-		if err != nil {
-			log.Printf("Error: %v\n", err)
-			continue
-		}
+		// Get email address
+		fmt.Print("Enter email address (or 'exit'): ")
+		email, _ := reader.ReadString('\n')
+		email = strings.TrimSpace(email)
 
+		// Check if the user wants to exit
 		if strings.ToLower(email) == "exit" {
 			fmt.Println("Exiting program.")
 			break
 		}
 
+		// Create a new message
 		m := NewMessage("Application for Java Developer Position", "Hello,\n\nI recently came across your LinkedIn post regarding the Java developer position and am very interested in this opportunity. Attached, please find my CV for your review. I believe my skills and experience make me a strong candidate for this role.\n\nThank you for considering my application. I look forward to the possibility of discussing how I can contribute to your team.\n\nBest regards,\nBart")
 		m.To = []string{email}
 
-		if err := m.AttachFile(filePath); err != nil {
-			log.Printf("Failed to attach file: %v\n", err)
-			continue
+		// Attach the file and handle errors
+		err := m.AttachFile(filePath)
+		if err != nil {
+			fmt.Printf("Failed to attach file: %v\n", err)
+			continue // Skip sending the email if file attachment fails
 		}
 
-		if err := sendEmail(m); err != nil {
-			log.Printf("Failed to send email: %v\n", err)
+		// Set up the SMTP authentication
+		auth := smtp.PlainAuth("", username, password, host)
+
+		// Send the email and handle errors
+		err = smtp.SendMail(fmt.Sprintf("%s:%s", host, portNumber), auth, username, m.To, m.ToBytes())
+		if err != nil {
+			fmt.Printf("Failed to send email: %v\n", err)
 		} else {
 			fmt.Println("Email sent successfully!")
+
 		}
 	}
 }
